@@ -1,12 +1,19 @@
 package router
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-kit/kit/endpoint"
+	httptransport "github.com/go-kit/kit/transport/http"
+	"github.com/julienschmidt/httprouter"
 	"github.com/labstack/echo"
+	"github.com/go-chi/chi"
+	"github.com/kataras/muxie"
 )
 
 type (
@@ -551,28 +558,26 @@ func echoHandler(method, path string) echo.HandlerFunc {
 	}
 }
 
-func BenchmarkEchoStatic(b *testing.B) {
+func benchmarkEcho(b *testing.B, routes []*Route){
 	e := echo.New()
-	loadEchoRoutes(e, static)
-	benchmarkRoutes(b, e, static)
+	loadEchoRoutes(e, routes)
+	benchmarkRoutes(b, e, routes)
+}
+
+func BenchmarkEchoStatic(b *testing.B) {
+	benchmarkEcho(b, static)
 }
 
 func BenchmarkEchoGitHubAPI(b *testing.B) {
-	e := echo.New()
-	loadEchoRoutes(e, githubAPI)
-	benchmarkRoutes(b, e, githubAPI)
+	benchmarkEcho(b, githubAPI)
 }
 
 func BenchmarkEchoGplusAPI(b *testing.B) {
-	e := echo.New()
-	loadEchoRoutes(e, gplusAPI)
-	benchmarkRoutes(b, e, gplusAPI)
+	benchmarkEcho(b, gplusAPI)
 }
 
 func BenchmarkEchoParseAPI(b *testing.B) {
-	e := echo.New()
-	loadEchoRoutes(e, parseAPI)
-	benchmarkRoutes(b, e, parseAPI)
+	benchmarkEcho(b, parseAPI)
 }
 
 func loadGinRoutes(g *gin.Engine, routes []*Route) {
@@ -598,30 +603,205 @@ func ginHandler(method, path string) gin.HandlerFunc {
 	}
 }
 
-func BenchmarkGinStatic(b *testing.B) {
+func benchmarkGin(b *testing.B, routes []*Route){
 	gin.SetMode(gin.ReleaseMode)
 	g := gin.New()
-	loadGinRoutes(g, static)
-	benchmarkRoutes(b, g, static)
+	loadGinRoutes(g, routes)
+	benchmarkRoutes(b, g, routes)
+}
+
+func BenchmarkGinStatic(b *testing.B) {
+	benchmarkGin(b, static)
 }
 
 func BenchmarkGinGitHubAPI(b *testing.B) {
-	gin.SetMode(gin.ReleaseMode)
-	g := gin.New()
-	loadGinRoutes(g, githubAPI)
-	benchmarkRoutes(b, g, githubAPI)
+	benchmarkGin(b, githubAPI)
 }
 
 func BenchmarkGinGplusAPI(b *testing.B) {
-	gin.SetMode(gin.ReleaseMode)
-	g := gin.New()
-	loadGinRoutes(g, gplusAPI)
-	benchmarkRoutes(b, g, gplusAPI)
+	benchmarkGin(b, gplusAPI)
 }
 
 func BenchmarkGinParseAPI(b *testing.B) {
-	gin.SetMode(gin.ReleaseMode)
-	g := gin.New()
-	loadGinRoutes(g, parseAPI)
-	benchmarkRoutes(b, g, parseAPI)
+	benchmarkGin(b, parseAPI)
+}
+
+func loadHTTPRouterRoutes(router *httprouter.Router, routes []*Route) {
+	for _, r := range routes {
+		router.Handle(r.Method, r.Path, httpRouterHandler(r.Method, r.Path))
+	}
+}
+
+func httpRouterHandler(method, path string) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+		//w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "OK")
+	}
+}
+
+func benchmarkHTTPRouter(b *testing.B, routes []*Route){
+	r := httprouter.New()
+	loadHTTPRouterRoutes(r, routes)
+	benchmarkRoutes(b, r, routes)
+}
+
+func BenchmarkHTTPRouterStatic(b *testing.B) {
+	benchmarkHTTPRouter(b, static)
+}
+
+func BenchmarkHTTPRouterGitHubAPI(b *testing.B) {
+	benchmarkHTTPRouter(b, githubAPI)
+}
+
+func BenchmarkHTTPRouterGplusAPI(b *testing.B) {
+	benchmarkHTTPRouter(b, gplusAPI)
+}
+
+func BenchmarkHTTPRouterParseAPI(b *testing.B) {
+	benchmarkHTTPRouter(b, parseAPI)
+}
+
+type DummyService interface {
+	Fake() string
+}
+
+type dummyService struct{}
+
+func (dummyService) Fake() string {
+	return "OK"
+}
+
+func noopDecoder(_ context.Context, _ *http.Request) (interface{}, error) {
+	return nil, nil
+}
+
+func noopEncoder(_ context.Context, w http.ResponseWriter, response interface{}) error {
+	w.WriteHeader(http.StatusOK)
+	_, err := fmt.Fprintln(w, response)
+	return err
+}
+
+func makeEndpoint(svc DummyService) endpoint.Endpoint {
+	return func(_ context.Context, request interface{}) (interface{}, error) {
+		return svc.Fake(), nil
+	}
+}
+
+func loadHTTPRouterGoKitRoutes(router *httprouter.Router, routes []*Route) {
+	for _, r := range routes {
+		//router.Handler(r.Method, r.Path, httpRouterGoKitHandler(r.Method, r.Path))
+		router.Handle(r.Method, r.Path,
+			func(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
+				httpRouterGoKitHandler(r.Method, r.Path)
+			},
+		)
+	}
+}
+
+func httpRouterGoKitHandler(method, path string) http.Handler {
+	svc := dummyService{}
+	handler := httptransport.NewServer(
+		makeEndpoint(svc),
+		noopDecoder,
+		noopEncoder,
+	)
+	return handler
+}
+
+func benchmarkHTTPRouterGoKit(b *testing.B, routes []*Route){
+	r := httprouter.New()
+	loadHTTPRouterGoKitRoutes(r, routes)
+	benchmarkRoutes(b, r, routes)
+}
+
+func BenchmarkHTTPRouterGoKitStatic(b *testing.B) {
+	benchmarkHTTPRouterGoKit(b, static)
+}
+
+func BenchmarkHTTPRouterGoKitGitHubAPI(b *testing.B) {
+	benchmarkHTTPRouterGoKit(b, githubAPI)
+}
+
+func BenchmarkHTTPRouterGoKitGplusAPI(b *testing.B) {
+	benchmarkHTTPRouterGoKit(b, gplusAPI)
+}
+
+func BenchmarkHTTPRouterGoKitParseAPI(b *testing.B) {
+	benchmarkHTTPRouterGoKit(b, parseAPI)
+}
+
+
+// ---------------------------------------  Chi
+func loadChiRoutes(router chi.Router, routes []*Route) {
+	for _, r := range routes {
+		router.MethodFunc(r.Method, r.Path, chiHandler(r.Method, r.Path))
+	}
+}
+
+func chiHandler(method, path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		//w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "OK")
+	}
+}
+
+func benchmarkChi(b *testing.B, routes []*Route){
+	r := chi.NewRouter()
+	loadChiRoutes(r, routes)
+	benchmarkRoutes(b, r, routes)
+}
+
+func BenchmarkChiStatic(b *testing.B) {
+	benchmarkChi(b, static)
+}
+
+func BenchmarkChiGitHubAPI(b *testing.B) {
+	benchmarkChi(b, githubAPI)
+}
+
+func BenchmarkChiGplusAPI(b *testing.B) {
+	benchmarkChi(b, gplusAPI)
+}
+
+func BenchmarkChiParseAPI(b *testing.B) {
+	benchmarkChi(b, parseAPI)
+}
+
+// ---------------------------------------  muxie
+func loadMuxieRoutes(router *muxie.Mux, routes []*Route) {
+	for _, r := range routes {
+		router.Handle(r.Path, muxie.Methods().HandleFunc(r.Method, muxieHandler(r.Method, r.Path)))
+	}
+}
+
+func muxieHandler(method, path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		//w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "OK")
+	}
+}
+
+func benchmarkMuxie(b *testing.B, routes []*Route){
+	mux := muxie.NewMux()
+	loadMuxieRoutes(mux, routes)
+	benchmarkRoutes(b, mux, routes)
+}
+
+func BenchmarkMuxieStatic(b *testing.B) {
+	benchmarkMuxie(b, static)
+}
+
+func BenchmarkMuxieGitHubAPI(b *testing.B) {
+	benchmarkMuxie(b, githubAPI)
+}
+
+func BenchmarkMuxieGplusAPI(b *testing.B) {
+	benchmarkMuxie(b, gplusAPI)
+}
+
+func BenchmarkMuxieParseAPI(b *testing.B) {
+	benchmarkMuxie(b, parseAPI)
 }
